@@ -1,7 +1,15 @@
+#!/usr/bin/env python
+# coding: utf-8
+
+# In[805]:
+
+
 import os
 import sys
 import pandas as pd
+import numpy as np
 import datetime
+from datetime import datetime as dt
 import json
 import pyodbc
 import re
@@ -19,9 +27,11 @@ from bokeh.models.widgets.markups import Div
 from math import ceil
 import math
 from sympy.ntheory import primefactors
-import statsmodels as sm
+import statsmodels as sm        
 
-# Prompts, Inputs and Data Retrieval #
+
+# In[3]:
+
 
 ## Login ##
 
@@ -47,6 +57,10 @@ get_databases_query = ("select name \
                         where name like '%scada_production%'")
 
 customer_data_databases = pd.read_sql_query(get_databases_query, master_db_connection)
+
+
+# In[763]:
+
 
 ## Prompt user for the customer/database of interest ##
 
@@ -74,7 +88,8 @@ while not os.path.exists(MAIN_FOLDER_PATH):
     print('\n')
     MAIN_FOLDER_PATH = fr"{input('The entered path does not exist. Please enter a valid path to continue: ')}"
 date = datetime.datetime.today().strftime('%Y-%m-%d')
-MAIN_FOLDER_PATH = os.path.join(MAIN_FOLDER_PATH, fr'{database[17:]}\{date}')
+customer_account_name = database[17:]
+MAIN_FOLDER_PATH = os.path.join(MAIN_FOLDER_PATH, fr'{customer_account_name}\{date}')
 if not os.path.exists(MAIN_FOLDER_PATH):
     os.makedirs(MAIN_FOLDER_PATH)
     assert os.path.exists(MAIN_FOLDER_PATH)
@@ -334,6 +349,9 @@ systems_info, systems = get_system_names(db_connection=db_connection,
                                          **get_system_names_bool_args)
 
 
+# In[764]:
+
+
 ## Prompt user for whether they want to obtain data separated by swaps, unseparated by swaps or both
 
 separate_by_swap = False
@@ -353,6 +371,38 @@ elif separate_by_swap_or_not == 2:
     pass
 else:
     raise ValueError(f'Invalid value of \'{separate_by_swap_or_not}\' of type {type(separate_by_swap_or_not)} passed to `separate_by_swap_or_not`.')
+
+
+# # New Block Start 
+# ==============================
+
+# In[765]:
+
+
+# Prompt user for whether they want the parameter definitions to be concealed
+
+def conceal_or_not():
+    conceal_param_defs = get_input(prompt='Would you like the parameter definitions to be concealed? (Y/N):\n',
+                               success_conditions=[lambda x: isinstance(x, str), lambda x: x.upper() in ('Y', 'N')],
+                               failure_messages=['The value entered is not a string. Please enter \'Y\' or \'N\'.',
+                                                 'The value entered is neither \'Y\' nor \'N\'. Please enter a valid input.'])
+    if conceal_param_defs.upper() == 'Y':
+        conceal_param_defs = True
+    elif conceal_param_defs.upper() == 'N':
+        conceal_param_defs = False
+    else:
+        print(f'Invalid entry {conceal_param_defs} provided. Please try again')
+        return conceal_or_not()
+    
+    return conceal_param_defs
+
+conceal_params = conceal_or_not()
+
+
+# ==============================
+# # New Block End
+
+# In[766]:
 
 
 ## Obtain parameter information ##
@@ -462,7 +512,7 @@ for system in systems:
 
     parameters_as_string = str(system_parameters).replace('[', '(').replace(']', ')')
 
-    system_data_query = (f'SELECT t3.[Description], t4.[zzDescription], t1.[LogTime], t1.[Value] \
+    system_data_query = (f'SELECT t3.[Description], t4.[zzDescription], t1.[ParameterId], t1.[LogTime], t1.[Value] \
                            FROM [dbo].[fst_GEN_ParameterValue] AS t1 \
                            INNER JOIN [dbo].[fst_GEN_Parameter] AS t2 \
                             ON t1.[ParameterId] = t2.[ParameterID] \
@@ -476,6 +526,8 @@ for system in systems:
                            ORDER BY t1.[LogTime]')
     
     system_data = pd.read_sql_query(system_data_query, con=db_connection)
+
+    system_data['ParameterInfo'] = system_data['zzDescription'] + ' RID ' + system_data['ParameterId'].astype(str)
 
     # Get system parameter mappings:
 
@@ -542,6 +594,12 @@ if not os.path.exists(FIG_DIR):
 if not os.path.exists(CSV_DIR):
     os.mkdir(CSV_DIR)
 
+
+# #### Concealed Parameter ID Mappings
+
+# In[767]:
+
+
 ## Prepare the data in the parquet files for plotting ##
 
 def plot_prep_from_parquet(data_files_dir, include_system_names_like=None):
@@ -590,7 +648,7 @@ def plot_prep_from_parquet(data_files_dir, include_system_names_like=None):
         # Convert DataFrame from long to wide format and sort by LogTime:
         
         system_data = system_data.pivot_table(index='LogTime',
-                                              columns='zzDescription',
+                                              columns='ParameterInfo',
                                               values='Value').sort_values(by='LogTime')
         
         system_data = system_data.rename(columns={col_name:col_name.replace(' ', '') for col_name in system_data.columns})
@@ -608,67 +666,111 @@ def plot_prep_from_parquet(data_files_dir, include_system_names_like=None):
             assert len(run_time_cols) > 0
             run_time_col = run_time_cols[0]
             # system_data.rename({run_time_col:'RunHours'}, axis=1, inplace=True)
-
-            print(f'Data for system {system_name} retrieved.')
-
-            # Separate data by the swap number:
-
-            run_hours = system_data[[run_time_col]][~system_data[run_time_col].isna()]
-            run_hours_idx_list = list(run_hours.index)
-            first_datum_idx = run_hours.index.min()
-            first_datum_idx_num = run_hours_idx_list.index(first_datum_idx)
-            swap_dates = [first_datum_idx]
-            current_swap_num = 1
-
-            run_hours['pump_num'] = current_swap_num
-            for idx_num in range(first_datum_idx_num, len(run_hours.index)):
-                if run_hours.iloc[idx_num][run_time_col] - run_hours.iloc[idx_num - 1][run_time_col] < -50:
-                    current_swap_num += 1
-                    swap_dates.append(run_hours.index[idx_num])
-
-                run_hours.loc[run_hours.index[idx_num], 'pump_num'] = current_swap_num
-
-            print(f'Swap dates for system {system_name} isolated.')
-
-            all_systems_data[system_name] = {}
             
-            all_systems_data[system_name]['swap_dates'] = swap_dates
-
-            # Check if any swaps took place
-            if len(swap_dates) == 0:
-                all_systems_data[system_name]['pump_1'] = system_data
-            
-            elif len(swap_dates) == 1:
-                all_systems_data[system_name]['pump_1'] = system_data[swap_dates[0]:]
-            
-            elif len(swap_dates) > 1:
-                # Add the data, separated by swap number, into the system_data_all dictionary:
-                for swap_dt_idx in range(len(swap_dates)):
-                    pump_num = swap_dt_idx+1
-                    swap_dt = swap_dates[swap_dt_idx]
-                    if swap_dt_idx == len(swap_dates)-1:
-                        all_systems_data[system_name][f"pump_{pump_num}"] = system_data[swap_dt:]
-                    else:
-                        next_swap_dt = swap_dates[swap_dt_idx+1]
-                        all_systems_data[system_name][f"pump_{pump_num}"] = system_data[swap_dt:next_swap_dt]
-                
-                if all_systems_data[system_name]['swap_dates'][0] == all_systems_data[system_name]['swap_dates'][1]:
-                    del all_systems_data[system_name]['swap_dates'][0]
-                    pump_key_nums = [key for key in all_systems_data[system_name].keys() if key!='swap_dates']
-                    for p_num in range(1,len(pump_key_nums)):
-                        new_key = f'pump_{p_num}'
-                        old_key = f'pump_{p_num+1}'
-                        all_systems_data[system_name][new_key] = all_systems_data[system_name][old_key]
-                        del all_systems_data[system_name][old_key]
-
-            print(f'Data for system {system_name} partitioned by swap date.')
-
-            print(f"Data for {system_name} prepared for plotting!")
-
         except:
             # raise ValueError
             print(f"The system {system_name} does not have any parameters that include the strings `RunHours` nor `Time`. Therefore, it must not be a pump. Skipping.")
             continue
+            
+        print(f'Data for system {system_name} retrieved.')
+
+        # Separate data by the swap number:
+
+        run_hours = system_data[[run_time_col]][~system_data[run_time_col].isna()]
+        run_hours_idx_list = list(run_hours.index)
+        first_datum_idx = run_hours.index.min()
+        first_datum_idx_num = run_hours_idx_list.index(first_datum_idx)
+        swap_dates = [first_datum_idx]
+        current_swap_num = 1
+
+        run_hours['pump_num'] = current_swap_num
+        for idx_num in range(0, len(run_hours.index)-1):
+
+            if idx_num in [0]:
+                continue
+
+            condition_1 = abs(run_hours.iloc[idx_num][run_time_col] - run_hours.iloc[idx_num + 1][run_time_col]) > 30
+
+            # condition_2 ensures that the low difference in run_hours identified by condition_1 is 
+            # not due to a break in incoming data
+
+            current_dt = run_hours.index[idx_num]
+            prev_dt = run_hours.index[idx_num-2]
+            try:
+                current_run_hrs = run_hours[run_time_col].loc[current_dt].iloc[0]
+            except:
+                try:
+                    current_run_hrs = run_hours[run_time_col].loc[current_dt]
+                except:
+                    print('wtf')
+
+            time_diff = ((run_hours.index[idx_num+1] - run_hours.index[idx_num])) + datetime.timedelta(hours=24)
+            hrs_diff = float((time_diff/np.timedelta64(1, 'h')))
+            future_dt = run_hours.index[idx_num] + time_diff
+            current_dt = run_hours.index[idx_num]
+            try:
+                current_run_hrs = run_hours.loc[current_dt].iloc[0]
+            except:
+                current_run_hrs = run_hours.loc[current_dt]
+            # print(run_hours.index[idx_num], run_hours.loc[run_hours.index[idx_num]]) 
+            # print(run_hours.index[idx_num+1], run_hours.loc[run_hours.index[idx_num+1]])
+            # print(hrs_diff) 
+            # print(future_dt, run_hours.loc[future_dt[0]-datetime.timedelta(hours=2):future_dt[0]])
+            local_future_run_hrs = run_hours.loc[current_dt:future_dt]
+            last_future_val = local_future_run_hrs.iloc[-1]
+            condition_2 = (current_run_hrs - last_future_val)[run_time_col] > hrs_diff
+
+            try:
+                if condition_1 and condition_2:
+                    print(f'condition_1: \n{condition_1}\n\ncondition_2: \n{condition_2}\n\ncurrent_run_hrs: \n{current_run_hrs}\n\nlast_future_val: \n{last_future_val}')
+            #                 print(7)
+                    current_swap_num += 1
+                    swap_dates.append(run_hours.index[idx_num+1])
+            except:
+                raise ValueError(f'condition_1: \n{condition_1}\n\ncondition_2: \n{condition_2}\n\ncurrent_run_hrs: \n{current_run_hrs}\n\nlast_future_val: \n{last_future_val}')
+
+            run_hours.loc[run_hours.index[idx_num], 'pump_num'] = current_swap_num
+
+        run_hours['pump_num'] = run_hours['pump_num'].fillna(method='ffill').fillna(method='bfill')
+
+        print(f'Swap dates for system {system_name} isolated.')
+
+        all_systems_data[system_name] = {}
+
+        all_systems_data[system_name]['swap_dates'] = swap_dates
+
+        # Check if any swaps took place
+        if len(swap_dates) == 0:
+            all_systems_data[system_name]['pump_1'] = system_data
+
+        elif len(swap_dates) == 1:
+            all_systems_data[system_name]['pump_1'] = system_data[swap_dates[0]:]
+
+        elif len(swap_dates) > 1:
+            # Add the data, separated by swap number, into the system_data_all dictionary:
+            for swap_dt_idx in range(len(swap_dates)):
+                pump_num = swap_dt_idx+1
+                swap_dt = swap_dates[swap_dt_idx]
+                if swap_dt_idx == len(swap_dates)-1:
+                    all_systems_data[system_name][f"pump_{pump_num}"] = system_data[swap_dt:]
+                else:
+                    next_swap_dt = swap_dates[swap_dt_idx+1]
+                    all_systems_data[system_name][f"pump_{pump_num}"] = system_data[swap_dt:next_swap_dt]
+
+            if all_systems_data[system_name]['swap_dates'][0] == all_systems_data[system_name]['swap_dates'][1]:
+                del all_systems_data[system_name]['swap_dates'][0]
+                pump_key_nums = [key for key in all_systems_data[system_name].keys() if key!='swap_dates']
+                for p_num in range(1,len(pump_key_nums)):
+                    new_key = f'pump_{p_num}'
+                    old_key = f'pump_{p_num+1}'
+                    all_systems_data[system_name][new_key] = all_systems_data[system_name][old_key]
+                    del all_systems_data[system_name][old_key]
+
+        print(f'Data for system {system_name} partitioned by swap date.')
+        
+        print(f'System swap dates: {all_systems_data[system_name]["swap_dates"]}')
+
+        print(f"Data for {system_name} prepared for plotting!")
 
     if len(all_systems_data) > 0:
         print(f"\n\nData retrieved and prepared for the following systems: ")
@@ -683,54 +785,58 @@ def plot_prep_from_parquet(data_files_dir, include_system_names_like=None):
 all_systems_data = plot_prep_from_parquet(DATA_FILES_DIR)
 
 
+# In[790]:
+
+
 ## Define a function to partition parameters into type of process
 
-def order_parameters(data, cols):
+def order_parameters(data, cols, conceal_params=False):
+    
     '''
     The function:
     1. Separates the parameters into groups 
     2. Changes the units of columns with temperature, pressure and flow from Kelvin, Pa and m^3/s to degrees Celcius, PSI and liters/minute, respectively.
     All of this is then used for columnar plotting by the function `interactive_plot_custom_data_1`.'''
-    parameters_ordered = {'DryPump':[],
-                          'Booster':[],
-                          'ExhaustAndShaft':[],
-                          'RunTime':[],
-                          'Oil':[],
-                          'Flow':[],
-                          'Motor':[],
-                          'Vibration':[],
-                          'Pos':[],
-                          'MagneticBearing':[],
-                          'MiscellaneousTemperatures':[],
-                          'Other':[]}
+    parameters_ordered = {'DryPump (DP)':[],
+                          'Booster (MB)':[],
+                          'ExhaustAndShaft (ES)':[],
+                          'RunTime (RT)':[],
+                          'Oil (OL)':[],
+                          'Flow (FW)':[],
+                          'Motor (MR)':[],
+                          'Vibration (VR)':[],
+                          'Pos (PS)':[],
+                          'MagneticBearing (MC)':[],
+                          'MiscellaneousTemperatures (MT)':[],
+                          'Other (OT)':[]}
     
     data = data.rename(columns={col:col.replace(' ', '').replace('DP', 'DryPump').replace('MB', 'Booster') for col in data.columns})
-
+    
     for column in data.columns:
         if ('Dry' in column or 'DP' in column) and ('Hours' not in column and 'Time' not in column):
-            parameters_ordered['DryPump'].append(column)
+            parameters_ordered['DryPump (DP)'].append(column)
         elif 'Booster' in column or 'MB' in column:
-            parameters_ordered['Booster'].append(column)
+            parameters_ordered['Booster (MB)'].append(column)
         elif 'Exhaust' in column or 'Shaft' in column:
-            parameters_ordered['ExhaustAndShaft'].append(column)
+            parameters_ordered['ExhaustAndShaft (ES)'].append(column)
         elif 'Oil' in column:
-            parameters_ordered['Oil'].append(column)
+            parameters_ordered['Oil (OL)'].append(column)
         elif 'Hour' in column or 'Time' in column:
-            parameters_ordered['RunTime'].append(column)
+            parameters_ordered['RunTime (RT)'].append(column)
         elif 'Flow' in column:
-            parameters_ordered['Flow'].append(column)
+            parameters_ordered['Flow (FW)'].append(column)
         elif 'Motor' in column:
-            parameters_ordered['Motor'].append(column)
+            parameters_ordered['Motor (MR)'].append(column)
         elif 'Vib' in column:
-            parameters_ordered['Vibration'].append(column)
+            parameters_ordered['Vibration (VR)'].append(column)
         elif 'Pos' in column:
-            parameters_ordered['Pos'].append(column)
+            parameters_ordered['Pos (PS)'].append(column)
         elif 'Magnetic' in column:
-            parameters_ordered['MagneticBearing'].append(column)
+            parameters_ordered['MagneticBearing (MC)'].append(column)
         elif 'Temperature' in column:
-            parameters_ordered['MiscellaneousTemperatures'].append(column)
+            parameters_ordered['MiscellaneousTemperatures (MT)'].append(column)
         else:
-            parameters_ordered['Other'].append(column)
+            parameters_ordered['Other (OT)'].append(column)
         
         if 'temp' in column.lower():
             data[column] = data[column] - 273.15
@@ -739,16 +845,26 @@ def order_parameters(data, cols):
         elif 'flow' in column.lower():
             data[column] = data[column] * 60000
     
+    parameters_ordered_concealed = {}
+    
     for key in parameters_ordered.keys():
-
-       parameters_ordered[key].sort()
+        parameters_ordered[key].sort()
+        left_idx = key.index('(')+1
+        right_idx = key.index(')')
+        concealed_key = key[left_idx:right_idx]
+        parameters_ordered_concealed[concealed_key] = parameters_ordered[key]
     
     if cols==None:
         cols = data.columns
-    
-    return parameters_ordered, data 
+        
+    if conceal_params:
+        return parameters_ordered_concealed, data
+    else:
+        return parameters_ordered, data
 
-## Define a function to compute sma and ewma for each parameter passed
+
+# In[775]:
+
 
 ## Define a function to compute sma and ewma for each parameter passed
 
@@ -783,7 +899,7 @@ def moving_averages(data,
         col_data_df[sma_parameter] = sma_col_data
 
         # Exponentially Weighted Moving Average:
-        ewma_parameter = f'{current_parameter}_ExpontentiallyWeighteMovingAverage'
+        ewma_parameter = f'{current_parameter}_ExpontentiallyWeightedMovingAverage'
         ewma_col_data = col_data_df[current_parameter].ewm(span=ewma_span,
                                                            com=ewma_com,
                                                            halflife=ewma_halflife,
@@ -801,15 +917,21 @@ def moving_averages(data,
         col_data_df = pd.DataFrame(data[data.notna()])
         return col_data_df
 
+
+# In[803]:
+
+
 ## Create dashboards ##
 
 def interactive_plot_system_data_1(data,
                                  save_dest,
                                  system,
                                  system_position,
+                                 customer_name,
                                  cols=None,
                                  save=True,
-                                 show_plots=False):
+                                 show_plots=False,
+                                 conceal_params=False):
     
     
     start_datetime = data.index.min().strftime('%d/%m/%Y %H:%M:%S')
@@ -818,7 +940,7 @@ def interactive_plot_system_data_1(data,
     
     system_name = f"{system_position}: {system.capitalize().replace('_', ' ')}, Start Date-Time: {start_datetime}, End Date-Time: {end_datetime}"
 
-    parameters_ordered, data = order_parameters(data, cols)
+    parameters_ordered, data = order_parameters(data, cols, conceal_params=conceal_params)
     
     parts_plots = {}
     count = 0
@@ -842,23 +964,38 @@ def interactive_plot_system_data_1(data,
             else:
                 radius_size=0.8
             current_parameter = parameters_ordered[i][j]
+            
+
 
             col_data = col_data[col_data.notna()]
-
-            if current_parameter not in parameters_ordered['RunTime']:
+            
+            if 'RT' not in i:
                 col_data_df, sma_parameter, ewma_parameter = moving_averages(col_data, 
                                                                          current_parameter=current_parameter,
                                                                          run_time_data=False,
                                                                          rolling_period='14D',
                                                                          ewma_alpha=0.15,
                                                                          ewma_adjust=False)
+                if conceal_params:
+                    left_raw_idx = current_parameter.index('RID')
+                    left_sma_idx = sma_parameter.index('RID')
+                    left_ewma_idx = ewma_parameter.index('RID')
+                    raw_label = f'{customer_name}_{current_parameter[left_raw_idx:]}'
+                    sma_label = f'{customer_name}_{sma_parameter[left_sma_idx:]}'
+                    ewma_label = f'{customer_name}_{ewma_parameter[left_ewma_idx:]}'
+                    
+                else:
+                    raw_label = current_parameter
+                    sma_label = sma_parameter
+                    ewma_label = ewma_parameter
+                
                 source = plotting.ColumnDataSource(col_data_df)
 
                 # Create interactive hovertool
                 fig_hover_tool = HoverTool(tooltips=[('LogTime', '@LogTime{%Y-%m-%d %H:%M:%S.%3N}'),
-                                                    (f'{current_parameter}', f'@{current_parameter}'),
-                                                    (f'{sma_parameter}', f'@{sma_parameter}'),
-                                                    (f'{ewma_parameter}', f'@{sma_parameter}')],
+                                                    (f'{raw_label}', f'@{current_parameter}'),
+                                                    (f'{sma_label}', f'@{sma_parameter}'),
+                                                    (f'{ewma_label}', f'@{sma_parameter}')],
                                            formatters={'@LogTime':'datetime'},
                                            mode='mouse')    
 
@@ -872,23 +1009,23 @@ def interactive_plot_system_data_1(data,
                 source = plotting.ColumnDataSource(col_data_df)
                 # Create interactive hovertool
                 fig_hover_tool = HoverTool(tooltips=[('LogTime', '@LogTime{%Y-%m-%d %H:%M:%S.%3N}'),
-                                                    (f'{current_parameter}', f'@{current_parameter}')],
+                                                    (f'{raw_label}', f'@{current_parameter}')],
                                            formatters={'@LogTime':'datetime'},
                                            mode='mouse')
             
             if count > 0:
                 fig = plotting.figure(x_axis_label='DateTime',
-                                      y_axis_label=current_parameter,
+                                      y_axis_label=raw_label,
                                       x_range=shared_x_range,
                                       x_axis_type='datetime',
-                                      title=f"{current_parameter}")
+                                      title=raw_label)
                 # print(f'\n\nData plotted for {system_position} {system} {i}:{j}')
             
             else:
                 fig = plotting.figure(x_axis_label='DateTime',
-                                      y_axis_label=current_parameter,
+                                      y_axis_label=raw_label,
                                       x_axis_type='datetime',
-                                      title=f"{current_parameter}")
+                                      title=raw_label)
                 # print(f'\n\nData plotted for {system_position} {system} {i}:{j}')
             
             if count == 0:
@@ -901,18 +1038,18 @@ def interactive_plot_system_data_1(data,
                      color='#47ed00',
                      line_alpha=0.7,
                      muted_alpha=0.2,
-                     legend_label=current_parameter)
+                     legend_label=raw_label)
             
             fig.add_tools(fig_hover_tool)
             
-            if current_parameter not in parameters_ordered['RunTime']:
+            if 'RT' not in i:
                 fig.line(x='LogTime',
                         y=sma_parameter,
                         source=source,
                         color='red',
                         line_alpha=1,
                         muted_alpha=0.1,
-                        legend_label=sma_parameter)
+                        legend_label=sma_label)
 
                 fig.line(x='LogTime',
                         y=ewma_parameter,
@@ -920,7 +1057,7 @@ def interactive_plot_system_data_1(data,
                         color='blue',
                         line_alpha=1,
                         muted_alpha=0.2,
-                        legend_label=ewma_parameter)
+                        legend_label=ewma_label)
 
             fig.circle(x='LogTime',
                        y=current_parameter,
@@ -991,14 +1128,20 @@ def interactive_plot_system_data_1(data,
         
 bokeh_system_data_plotters = {'mk1':interactive_plot_system_data_1}
 
+
+# In[804]:
+
+
 def interactive_plot_all_systems_data(all_systems_data,
                                       save_dest,
+                                      customer_name,
                                       mark=1,
                                       cols=None,
                                       save=True,
                                       show_plots=False,
                                       separate_by_swap=True,
-                                      sep_and_whole=True):
+                                      sep_and_whole=True,
+                                      conceal_params=False):
     
     system_positions = [str(dict_key) for dict_key in all_systems_data.keys()]
     
@@ -1016,7 +1159,9 @@ def interactive_plot_all_systems_data(all_systems_data,
                                                         system_position = f"{position}",
                                                         system=f"{system}",
                                                         show_plots=show_plots,
-                                                        save=save)
+                                                        save=save,
+                                                        conceal_params=conceal_params,
+                                                        customer_name=customer_name)
 
                 if save:
                     text = '\033[1m' + f"Dashboard for {position} {system} generated and placed within '{save_dest}.'" + '\033[0m'
@@ -1031,7 +1176,9 @@ def interactive_plot_all_systems_data(all_systems_data,
                                                     system_position=position,
                                                     system='All_Systems',
                                                     show_plots=show_plots,
-                                                    save=save)
+                                                    save=save,
+                                                    conceal_params=conceal_params,
+                                                    customer_name=customer_name)
             if save:
                 text = '\033[1m' + f"Dashboard for all of the data on {position} generated and placed within '{save_dest}.'" + '\033[0m'
                 colored_text = colored(text=text, color='blue')
@@ -1044,5 +1191,13 @@ interactive_plot_all_systems_data(all_systems_data,
                                   show_plots=False,
                                   save=True,
                                   separate_by_swap=separate_by_swap,
-                                  sep_and_whole=sep_and_whole)
+                                  sep_and_whole=sep_and_whole,
+                                  conceal_params=conceal_or_not,
+                                  customer_name=customer_account_name)
+
+
+# In[ ]:
+
+
+
 
