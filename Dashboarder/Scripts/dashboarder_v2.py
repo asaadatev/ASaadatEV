@@ -1192,12 +1192,5 @@ interactive_plot_all_systems_data(all_systems_data,
                                   save=True,
                                   separate_by_swap=separate_by_swap,
                                   sep_and_whole=sep_and_whole,
-                                  conceal_params=conceal_or_not,
+                                  conceal_params=conceal_params,
                                   customer_name=customer_account_name)
-
-
-# In[ ]:
-
-
-
-
