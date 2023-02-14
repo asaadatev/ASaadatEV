@@ -21,6 +21,8 @@ from math import ceil
 import math
 from sympy.ntheory import primefactors
 import statsmodels as sm
+from ev_utilities import DataAvailability
+import time
 
 # Prompts, Inputs and Data Retrieval #
 
@@ -178,6 +180,18 @@ conceal_params = False
 # # New Block End
 
 # In[766]:
+
+
+## Retrieve Data Availability for the Customer Account ##
+    
+availability = DataAvailability.get_avail(db = database, 
+                                          save=True, 
+                                          ROOT_PATH=MAIN_FOLDER_PATH, 
+                                          RESOURCES_PATH=RESOURCES_PATH)
+
+print(f'\n\nData availability results saved within "{MAIN_FOLDER_PATH}\Availability"\n\n')
+
+time.sleep(5)
 
 
 ## Obtain parameter information ##
@@ -464,7 +478,14 @@ def plot_prep_from_parquet(data_files_dir, include_system_names_like=None):
             if idx_num in [0]:
                 continue
 
-            condition_1 = abs(run_hours.iloc[idx_num][run_time_col] - run_hours.iloc[idx_num + 1][run_time_col]) > 30
+            # *old condition_1* condition_1 = abs(run_hours.iloc[idx_num][run_time_col] - run_hours.iloc[idx_num + 1][run_time_col]) > 100
+
+            # New condition_1 checks for a percentage drop (of greater than 60%) as opposed to a numerical drop for more robust detection
+
+            if  run_hours.iloc[idx_num][run_time_col] != 0:
+                condition_1 = run_hours.iloc[idx_num + 1][run_time_col] / run_hours.iloc[idx_num][run_time_col] < 0.4
+            else:
+                condition_1 = False
 
             # condition_2 ensures that the low difference in run_hours identified by condition_1 is 
             # not due to a break in incoming data
@@ -969,7 +990,7 @@ def interactive_plot_all_systems_data(all_systems_data,
                 print(colored_text)
 
 
-customer_account_name = 'XFAB_France'                
+customer_account_name = 'Micron_F16'                
 
 interactive_plot_all_systems_data(all_systems_data,
                                   save_dest=FIG_DIR,
