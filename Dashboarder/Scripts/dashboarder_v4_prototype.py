@@ -772,7 +772,14 @@ def plot_prep_from_parquet(data_files_dir,
         if idx_num in [0]:
             continue
 
-        condition_1 = abs(run_hours.iloc[idx_num][run_time_col] - run_hours.iloc[idx_num + 1][run_time_col]) > 30
+        # *old condition_1* condition_1 = abs(run_hours.iloc[idx_num][run_time_col] - run_hours.iloc[idx_num + 1][run_time_col]) > 100
+
+        # New condition_1 checks for a percentage drop (of greater than 60%) as opposed to a numerical drop for more robust detection
+
+        if  run_hours.iloc[idx_num][run_time_col] != 0:
+            condition_1 = run_hours.iloc[idx_num + 1][run_time_col] / run_hours.iloc[idx_num][run_time_col] < 0.4
+        else:
+            condition_1 = False
 
         # condition_2 ensures that the low difference in run_hours identified by condition_1 is 
         # not due to a break in incoming data
